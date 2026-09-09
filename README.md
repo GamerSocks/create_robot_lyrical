@@ -1,14 +1,16 @@
-# create_robot
+# create_robot_lyrical
 
-[ROS](https://docs.ros.org) driver for iRobot Create 1 and 2.
-This package wraps the C++ library [libcreate][libcreate], which uses iRobot's [Open Interface Specification][oi_spec].
+This is a fork of the [ROS](https://docs.ros.org) driver for iRobot Create 1 and 2 targeting **ROS 2 Lyrical Luth on Ubuntu 26.04**. There is no affiliation between the maintainer of this fork and the original authors.
+
+This package wraps the (modified) C++ library [libcreate][libcreate], which uses iRobot's [Open Interface Specification][oi_spec]. The patched library is included in
+`libcreate/` as a regular colcon package; this is the only repository to clone.
 
 <!--[](* Documentation: TODO)-->
 * ROS wiki page: http://wiki.ros.org/create_robot
 * Support: [ROS Answers (tag: create_robot)](http://answers.ros.org/questions/scope:all/sort:activity-desc/tags:create_robot/page:1/)
 * Author: [Jacob Perron](http://jacobperron.ca) ([Autonomy Lab](https://autonomy.cs.sfu.ca), [Simon Fraser University](http://www.sfu.ca))
 
-## Build Status
+## Upstream Build Status
 
 - ROS Rolling (branch: `rolling`) ![](https://github.com/autonomylab/create_robot/workflows/Continuous%20Integration/badge.svg?branch=rolling)
 - ROS Iron (branch: `iron`) ![](https://github.com/autonomylab/create_robot/workflows/Continuous%20Integration/badge.svg?branch=iron)
@@ -65,7 +67,7 @@ _* Not verified. Anyone who is able to verify that this driver works or not is e
 #### Prerequisites
 
 * Internet connection
-* [ROS 2](https://index.ros.org/doc/ros2/Installation)
+* [ROS 2 Lyrical Luth](https://docs.ros.org/en/lyrical/Get-Started/Installation.html)
 * Ubuntu packages: `python3-rosdep`, `python3-colcon-common-extensions`
 
 ``` bash
@@ -81,24 +83,26 @@ $ sudo apt install python3-rosdep python3-colcon-common-extensions
     $ cd create_ws
     ```
 
-2. Clone this repo
+2. Clone this fork, which includes the patched `libcreate` sources:
     ``` bash
     $ cd ~/create_ws/src
-    $ git clone https://github.com/autonomylab/create_robot.git
-    $ git clone https://github.com/AutonomyLab/libcreate.git
+    $ git clone https://github.com/GamerSocks/create_robot_lyrical.git
     ```
 
 3. Install dependencies
     ``` bash
     $ cd ~/create_ws
+    $ source /opt/ros/lyrical/setup.bash
     $ rosdep update
-    $ rosdep install --from-paths src -i
+    $ rosdep install --from-paths src --ignore-src --rosdistro lyrical -y
     ```
 
 4. Build
     ``` bash
     $ cd ~/create_ws
-    $ colcon build
+    $ source /opt/ros/lyrical/setup.bash
+    $ colcon build --symlink-install 
+    $ source install/setup.bash
     ```
 #### USB Permissions
 5. In order to connect to Create over USB, ensure your user is in the dialout group

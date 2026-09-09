@@ -1,7 +1,5 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.20)
 project(create_driver)
-
-set(CMAKE_CXX_STANDARD 14)
 
 add_compile_options(-Wall -Wextra -Wpedantic)
 
@@ -19,24 +17,21 @@ find_package(std_msgs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 
-include_directories(
-  include
-  ${libcreate_INCLUDE_DIRS}
-)
-
 add_executable(${PROJECT_NAME} src/${PROJECT_NAME}.cpp)
-ament_target_dependencies(${PROJECT_NAME}
-  create_msgs
-  diagnostic_msgs
-  diagnostic_updater
-  geometry_msgs
-  libcreate
-  nav_msgs
-  rclcpp
-  sensor_msgs
-  std_msgs
-  tf2_geometry_msgs
-  tf2_ros
+target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_20)
+target_include_directories(${PROJECT_NAME} PRIVATE include)
+target_link_libraries(${PROJECT_NAME} PRIVATE
+  create
+  create_msgs::create_msgs
+  diagnostic_msgs::diagnostic_msgs
+  diagnostic_updater::diagnostic_updater
+  geometry_msgs::geometry_msgs
+  nav_msgs::nav_msgs
+  rclcpp::rclcpp
+  sensor_msgs::sensor_msgs
+  std_msgs::std_msgs
+  tf2_geometry_msgs::tf2_geometry_msgs
+  tf2_ros::tf2_ros
 )
 
 if(BUILD_TESTING)
