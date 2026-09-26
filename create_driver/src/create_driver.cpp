@@ -29,7 +29,9 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "create_driver/create_driver.h"
 
 #include <chrono>
+#include <cmath>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
@@ -52,6 +54,20 @@ CreateDriver::CreateDriver()
   publish_tf_ = declare_parameter<bool>("publish_tf", true);
   oi_mode_workaround_ = declare_parameter<bool>("oi_mode_workaround", false);
 
+  rcl_interfaces::msg::ParameterDescriptor odometry_parameter;
+  odometry_parameter.read_only = true;
+  const int velocity_window_size = declare_parameter<int>("velocity_window_size", 5, odometry_parameter);
+  odometry_timeout_ = declare_parameter<double>("odometry_timeout", 1.0, odometry_parameter);
+  const double max_encoder_wheel_speed = declare_parameter<double>("max_encoder_wheel_speed", 0.0, odometry_parameter);
+  const double encoder_timing_tolerance = declare_parameter<double>(
+    "encoder_timing_tolerance", 0.05, odometry_parameter);
+  if (velocity_window_size < 1 || velocity_window_size > 255 ||
+      !std::isfinite(odometry_timeout_) || odometry_timeout_ <= 0.0 ||
+      !std::isfinite(max_encoder_wheel_speed) || max_encoder_wheel_speed < 0.0 ||
+      !std::isfinite(encoder_timing_tolerance) || encoder_timing_tolerance < 0.0) {
+    throw std::invalid_argument("Invalid odometry window, timeout or encoder limits");
+  }
+
   auto robot_model_name = declare_parameter<std::string>("robot_model", "CREATE_2");
   if (robot_model_name == "ROOMBA_400") {
     model_ = create::RobotModel::ROOMBA_400;
@@ -71,6 +87,36 @@ CreateDriver::CreateDriver()
 
   // Disable signal handler; let rclcpp handle them
   robot_ = new create::Create(model_, false);
+  robot_->setDtHistoryLength(static_cast<uint8_t>(velocity_window_size));
+  robot_->setOdometryLimits(odometry_timeout_, max_encoder_wheel_speed, encoder_timing_tolerance);
+  auto calibration = robot_->getOdometryCalibration();
+  calibration.left_distance_scale = declare_parameter<double>("left_wheel_distance_scale", 1.0, odometry_parameter);
+  calibration.right_distance_scale = declare_parameter<double>("right_wheel_distance_scale", 1.0, odometry_parameter);
+  calibration.axle_length = declare_parameter<double>(
+    "odometry_axle_length", calibration.axle_length, odometry_parameter);
+  calibration.left_noise_k = declare_parameter<double>(
+    "left_wheel_noise_k", calibration.left_noise_k, odometry_parameter);
+  calibration.right_noise_k = declare_parameter<double>(
+    "right_wheel_noise_k", calibration.right_noise_k, odometry_parameter);
+  // The default endpoint quantization scales with the corrected metres per tick.
+  calibration.left_noise_q0 = declare_parameter<double>("left_wheel_noise_q0",
+    calibration.left_noise_q0 * std::pow(calibration.left_distance_scale, 2), odometry_parameter);
+  calibration.right_noise_q0 = declare_parameter<double>("right_wheel_noise_q0",
+    calibration.right_noise_q0 * std::pow(calibration.right_distance_scale, 2), odometry_parameter);
+  calibration.wheel_error_correlation = declare_parameter<double>("wheel_error_correlation", 0.0, odometry_parameter);
+  calibration.vx_variance_floor = declare_parameter<double>(
+    "vx_variance_floor", calibration.vx_variance_floor, odometry_parameter);
+  calibration.yaw_rate_variance_floor = declare_parameter<double>(
+    "yaw_rate_variance_floor", calibration.yaw_rate_variance_floor, odometry_parameter);
+  calibration.lateral_velocity_variance = declare_parameter<double>(
+    "lateral_velocity_variance", calibration.lateral_velocity_variance, odometry_parameter);
+  calibration.initial_yaw_variance = declare_parameter<double>(
+    "initial_yaw_variance", calibration.initial_yaw_variance, odometry_parameter);
+  calibration.yaw_orientation_variance_floor = declare_parameter<double>(
+    "yaw_orientation_variance_floor", calibration.yaw_orientation_variance_floor, odometry_parameter);
+  calibration.yaw_discontinuity_variance = declare_parameter<double>(
+    "yaw_discontinuity_variance", calibration.yaw_discontinuity_variance, odometry_parameter);
+  robot_->setOdometryCalibration(calibration);
 
   // Enable/disable the OI mode reporting workaround in libcreate.
   // https://github.com/AutonomyLab/create_robot/issues/64
@@ -171,6 +217,7 @@ CreateDriver::CreateDriver()
   diagnostics_.add("Safety Status", this, &CreateDriver::updateSafetyDiagnostics);
   diagnostics_.add("Serial Status", this, &CreateDriver::updateSerialDiagnostics);
   diagnostics_.add("Base Mode", this, &CreateDriver::updateModeDiagnostics);
+  diagnostics_.add("Odometry Status", this, &CreateDriver::updateOdometryDiagnostics);
   diagnostics_.add("Driver Status", this, &CreateDriver::updateDriverDiagnostics);
 
   diagnostics_.setHardwareID(robot_model_name);
@@ -440,16 +487,47 @@ void CreateDriver::updateDriverDiagnostics(diagnostic_updater::DiagnosticStatusW
   }
 }
 
+void CreateDriver::updateOdometryDiagnostics(diagnostic_updater::DiagnosticStatusWrapper& stat)
+{
+  const auto state = robot_->getOdometryState();
+  const double age = state.sequence == 0 ? -1.0 :
+    std::chrono::duration<double>(std::chrono::steady_clock::now() - state.sample_time).count();
+  if (!state.valid) {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN,
+      "Waiting for a complete odometry interval after startup or rebaseline");
+  } else if (age > odometry_timeout_) {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::ERROR, "Odometry sensor reception timed out");
+  } else if (state.discontinuities > 0) {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::WARN,
+      "Odometry resumed after discarded intervals; accumulated pose may omit movement");
+  } else {
+    stat.summary(diagnostic_msgs::msg::DiagnosticStatus::OK, "Odometry measurements are current");
+  }
+  stat.add("Last accepted sample age (s; -1 before first interval)", age);
+  stat.add("Discarded intervals", state.discontinuities);
+  stat.add("Accepted measurement sequence", state.sequence);
+  stat.add("Velocity window duration (s)", state.window_duration);
+}
+
 void CreateDriver::publishOdom()
 {
-  create::Pose pose = robot_->getPose();
-  create::Vel vel = robot_->getVel();
+  const auto state = robot_->getOdometryState();
+  if (!state.valid || state.sequence == last_odom_sequence_) return;
+  const auto ros_now = now();
+  const auto age = std::chrono::steady_clock::now() - state.sample_time;
+  const auto age_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(age).count();
+  if (age_ns < 0 || std::chrono::duration<double>(age).count() > odometry_timeout_ ||
+      ros_now.nanoseconds() <= age_ns) return;
+  // Convert host monotonic receive age to ROS time; never reinterpret steady-clock epoch.
+  const auto stamp = ros_now - rclcpp::Duration(std::chrono::nanoseconds(age_ns));
+  const auto& pose = state.pose;
+  const auto& vel = state.velocity;
 
   // Populate position info
   tf2::Quaternion tf_quat;
   tf_quat.setRPY(0.0, 0.0, pose.yaw);
   geometry_msgs::msg::Quaternion quat = tf2::toMsg(tf_quat);
-  odom_msg_.header.stamp = now();
+  odom_msg_.header.stamp = stamp;
   odom_msg_.pose.pose.position.x = pose.x;
   odom_msg_.pose.pose.position.y = pose.y;
   odom_msg_.pose.pose.orientation = quat;
@@ -480,7 +558,7 @@ void CreateDriver::publishOdom()
   odom_msg_.twist.covariance[35] = vel.covariance[8];
 
   if (publish_tf_) {
-    tf_odom_.header.stamp = now();
+    tf_odom_.header.stamp = odom_msg_.header.stamp;
     tf_odom_.transform.translation.x = pose.x;
     tf_odom_.transform.translation.y = pose.y;
     tf_odom_.transform.rotation = quat;
@@ -488,6 +566,7 @@ void CreateDriver::publishOdom()
   }
 
   odom_pub_->publish(odom_msg_);
+  last_odom_sequence_ = state.sequence;
 }
 
 void CreateDriver::publishJointState()

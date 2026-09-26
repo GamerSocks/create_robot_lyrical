@@ -1,8 +1,10 @@
+#include <algorithm>
 #include <iostream>
 #include <cmath>
 #include <ctime>
 #include <memory>
 #include <assert.h>
+#include <stdexcept>
 
 #include "create/create.h"
 
@@ -41,7 +43,21 @@ namespace create {
     poseCovar = Matrix(3, 3, 0.0);
     requestedLeftVel = 0;
     requestedRightVel = 0;
-    dtHistoryLength = 100;
+    measuredLeftVel = 0;
+    measuredRightVel = 0;
+    dtHistoryLength = 5;
+    odometryMaxGap = 1.0;
+    maxEncoderWheelSpeed = 0.0;
+    encoderTimingTolerance = 0.05;
+    odometryCalibration.axle_length = model.getAxleLength();
+    if (model.getVersion() >= V_3) {
+      const double tick = model.getWheelDiameter() * util::PI / util::V_3_TICKS_PER_REV;
+      // Moving-phase endpoint quantization approximation; not calibrated slip noise.
+      odometryCalibration.left_noise_q0 = tick * tick / 6.0;
+      odometryCalibration.right_noise_q0 = tick * tick / 6.0;
+    }
+    odometryState.pose = pose;
+    odometryState.velocity = vel;
     modeReportWorkaround = false;
     data = std::shared_ptr<Data>(new Data(model.getVersion()));
     if (model.getVersion() == V_1) {
@@ -91,20 +107,66 @@ namespace create {
     return C;
   }
 
-  void Create::onData() {
-    if (firstOnData) {
-      if (model.getVersion() >= V_3) {
-        // Initialize tick counts
-        prevTicksLeft = GET_DATA(ID_LEFT_ENC);
-        prevTicksRight = GET_DATA(ID_RIGHT_ENC);
+  void Create::updatePoseCovariance() {
+    for (size_t row = 0; row < 3; ++row) {
+      for (size_t col = 0; col < 3; ++col) {
+        pose.covariance[3 * row + col] = poseCovar(row, col);
       }
-      prevOnDataTime = std::chrono::steady_clock::now();
-      firstOnData = false;
     }
+    const auto& c = odometryCalibration;
+    // Endpoint error of heading since the initial encoder baseline, added once
+    // to the published marginal. Never feed it back into the diffusion state.
+    const double endpointCross = c.wheel_error_correlation *
+      std::sqrt(c.right_noise_q0) * std::sqrt(c.left_noise_q0);
+    const double endpointYaw = std::max(0.0,
+      (c.right_noise_q0 + c.left_noise_q0 - 2.0 * endpointCross) / (c.axle_length * c.axle_length));
+    pose.covariance[8] = std::max(c.yaw_orientation_variance_floor,
+      static_cast<double>(poseCovar(2, 2)) + endpointYaw);
+  }
 
-    // Get current time
-    auto curTime = std::chrono::steady_clock::now();
-    float dt = static_cast<std::chrono::duration<float>>(curTime - prevOnDataTime).count();
+  void Create::rebaseline(std::chrono::steady_clock::time_point curTime,
+                         bool discontinuity) {
+    if (model.getVersion() >= V_3) {
+      prevTicksLeft = GET_DATA(ID_LEFT_ENC);
+      prevTicksRight = GET_DATA(ID_RIGHT_ENC);
+    }
+    prevOnDataTime = curTime;
+    firstOnData = false;
+    velocityHistory.clear();
+    measuredLeftVel = measuredRightVel = 0.0f;
+    vel.x = vel.y = vel.yaw = 0.0f;
+    odometryState.valid = false;
+    odometryState.window_duration = 0.0;
+    odometryState.window_left_distance = odometryState.window_right_distance = 0.0;
+    odometryState.window_left_travel = odometryState.window_right_travel = 0.0;
+    if (discontinuity) {
+      ++odometryState.discontinuities;
+      // Lost encoder motion also loses heading: do not retain false confidence
+      // in an unchanged yaw when the next valid sample resumes publication.
+      poseCovar(2, 2) += odometryCalibration.yaw_discontinuity_variance;
+      updatePoseCovariance();
+      odometryState.pose = pose;
+    }
+  }
+
+  void Create::onData() {
+    // Timestamp reception before waiting for any reader of the odometry state.
+    onDataAt(std::chrono::steady_clock::now());
+  }
+
+  void Create::onDataAt(std::chrono::steady_clock::time_point curTime) {
+    std::lock_guard<std::mutex> lock(odometryMutex);
+    if (firstOnData) {
+      rebaseline(curTime, false);
+      return;
+    }
+    const double dt = std::chrono::duration<double>(curTime - prevOnDataTime).count();
+    // Cumulative encoders preserve this movement for the next timed sample.
+    if (dt == 0.0 && model.getVersion() >= V_3) return;
+    if (dt <= 0.0 || dt > odometryMaxGap) {
+      rebaseline(curTime, true);
+      return;
+    }
     float deltaDist = 0.0f;
     float deltaX = 0.0f;
     float deltaY = 0.0f;
@@ -153,19 +215,23 @@ namespace create {
       // Get cumulative ticks (wraps around at 65535)
       uint16_t totalTicksLeft = GET_DATA(ID_LEFT_ENC);
       uint16_t totalTicksRight = GET_DATA(ID_RIGHT_ENC);
-      // Compute ticks since last update
-      int ticksLeft = totalTicksLeft - prevTicksLeft;
-      int ticksRight = totalTicksRight - prevTicksRight;
+      // Signed shortest displacement modulo 2^16. An interval must contain
+      // fewer than half a revolution of the counter, not of the wheel.
+      const auto tickDelta = [](uint16_t current, uint16_t previous) {
+        int32_t delta = static_cast<int32_t>(current) - static_cast<int32_t>(previous);
+        if (delta > 32767) delta -= 65536;
+        else if (delta < -32768) delta += 65536;
+        return delta;
+      };
+      const int32_t ticksLeft = tickDelta(totalTicksLeft, prevTicksLeft);
+      const int32_t ticksRight = tickDelta(totalTicksRight, prevTicksRight);
+      if (ticksLeft == -32768 || ticksRight == -32768) {
+        // Exactly half the counter range has two equally plausible directions.
+        rebaseline(curTime, true);
+        return;
+      }
       prevTicksLeft = totalTicksLeft;
       prevTicksRight = totalTicksRight;
-
-      // Handle wrap around
-      if (std::abs(ticksLeft) > 0.9 * util::V_3_MAX_ENCODER_TICKS) {
-        ticksLeft = (ticksLeft % util::V_3_MAX_ENCODER_TICKS) + 1;
-      }
-      if (std::abs(ticksRight) > 0.9 * util::V_3_MAX_ENCODER_TICKS) {
-        ticksRight = (ticksRight % util::V_3_MAX_ENCODER_TICKS) + 1;
-      }
 
       // Compute distance travelled by each wheel
       leftWheelDist = (ticksLeft / util::V_3_TICKS_PER_REV)
@@ -178,107 +244,109 @@ namespace create {
       deltaYaw = wheelDistDiff / model.getAxleLength();
     }
 
-    // determine average dt over window
-    dtHistory.push_front(dt);
+    const auto& calibration = odometryCalibration;
+    const double axle = calibration.axle_length;
+    leftWheelDist *= calibration.left_distance_scale;
+    rightWheelDist *= calibration.right_distance_scale;
+    deltaDist = (rightWheelDist + leftWheelDist) / 2.0;
+    wheelDistDiff = rightWheelDist - leftWheelDist;
+    deltaYaw = wheelDistDiff / axle;
 
-    if (dtHistory.size() > dtHistoryLength){
-      dtHistory.pop_back();
+    const double metresPerTick = model.getWheelDiameter() * util::PI / util::V_3_TICKS_PER_REV;
+    if (model.getVersion() >= V_3 && maxEncoderWheelSpeed > 0.0) {
+      const double tickLeft = metresPerTick * calibration.left_distance_scale;
+      const double tickRight = metresPerTick * calibration.right_distance_scale;
+      const double boundLeft = maxEncoderWheelSpeed * (dt + encoderTimingTolerance) + tickLeft;
+      const double boundRight = maxEncoderWheelSpeed * (dt + encoderTimingTolerance) + tickRight;
+      if (boundLeft >= 32768.0 * tickLeft || boundRight >= 32768.0 * tickRight ||
+          std::abs(leftWheelDist) > boundLeft || std::abs(rightWheelDist) > boundRight) {
+        rebaseline(curTime, true);
+        return;
+      }
     }
 
-    float dtHistorySum = 0;
-    for (auto it = dtHistory.cbegin(); it != dtHistory.cend(); ++it)
-    {
-      dtHistorySum += *it;
+    velocityHistory.push_back({dt, leftWheelDist, rightWheelDist});
+    while (velocityHistory.size() > dtHistoryLength) velocityHistory.pop_front();
+    double windowTime = 0.0, windowLeft = 0.0, windowRight = 0.0;
+    double leftTravel = 0.0, rightTravel = 0.0;
+    for (const auto& interval : velocityHistory) {
+      windowTime += interval.dt;
+      windowLeft += interval.left;
+      windowRight += interval.right;
+      leftTravel += std::abs(interval.left);
+      rightTravel += std::abs(interval.right);
     }
-    auto dtAverage = dtHistorySum / dtHistory.size();
+    measuredLeftVel = windowLeft / windowTime;
+    measuredRightVel = windowRight / windowTime;
 
-    measuredLeftVel = leftWheelDist / dtAverage;
-    measuredRightVel = rightWheelDist / dtAverage;
-
-    // Moving straight
-    if (fabs(wheelDistDiff) < util::EPS) {
-      deltaX = deltaDist * cos(pose.yaw);
-      deltaY = deltaDist * sin(pose.yaw);
-    } else {
-      float turnRadius = (model.getAxleLength() / 2.0) * (leftWheelDist + rightWheelDist) / wheelDistDiff;
-      deltaX = turnRadius * (sin(pose.yaw + deltaYaw) - sin(pose.yaw));
-      deltaY = -turnRadius * (cos(pose.yaw + deltaYaw) - cos(pose.yaw));
-    }
+    // Exact constant-curvature integration, stable at zero curvature.
+    const double halfYaw = deltaYaw / 2.0;
+    const double halfYaw2 = halfYaw * halfYaw;
+    const double sinc = std::abs(halfYaw) < 1e-4 ?
+      1.0 - halfYaw2 / 6.0 + halfYaw2 * halfYaw2 / 120.0 : std::sin(halfYaw) / halfYaw;
+    // Derivative of sinc(deltaYaw/2) with respect to deltaYaw.
+    const double sincDerivative = std::abs(halfYaw) < 1e-4 ?
+      -halfYaw / 6.0 + halfYaw * halfYaw2 / 60.0 :
+      (halfYaw * std::cos(halfYaw) - std::sin(halfYaw)) / (2.0 * halfYaw2);
+    const double cosMid = std::cos(pose.yaw + halfYaw);
+    const double sinMid = std::sin(pose.yaw + halfYaw);
+    deltaX = deltaDist * sinc * cosMid;
+    deltaY = deltaDist * sinc * sinMid;
 
     totalLeftDist += leftWheelDist;
     totalRightDist += rightWheelDist;
 
-    if (fabs(dtAverage) > util::EPS) {
-      vel.x = deltaDist / dtAverage;
-      vel.y = 0.0;
-      vel.yaw = deltaYaw / dtAverage;
-    } else {
-      vel.x = 0.0;
-      vel.y = 0.0;
-      vel.yaw = 0.0;
-    }
+    vel.x = (windowRight + windowLeft) / (2.0 * windowTime);
+    vel.y = 0.0;
+    vel.yaw = (windowRight - windowLeft) / (axle * windowTime);
 
-    // Update covariances
-    // Ref: "Introduction to Autonomous Mobile Robots" (Siegwart 2004, page 189)
-    float kr = 1.0; // TODO: Perform experiments to find these nondeterministic parameters
-    float kl = 1.0;
-    float cosYawAndHalfDelta = cos(pose.yaw + (deltaYaw / 2.0)); // deltaX?
-    float sinYawAndHalfDelta = sin(pose.yaw + (deltaYaw / 2.0)); // deltaY?
-    float distOverTwoWB = deltaDist / (model.getAxleLength() * 2.0);
+    // Body-frame velocity covariance of the same complete measurement window.
+    // q0 is added once, never independently to each encoder difference.
+    const double qRight = calibration.right_noise_k * rightTravel + calibration.right_noise_q0;
+    const double qLeft = calibration.left_noise_k * leftTravel + calibration.left_noise_q0;
+    const double cross = calibration.wheel_error_correlation * std::sqrt(qRight) * std::sqrt(qLeft);
+    const double timeSquared = windowTime * windowTime;
+    std::fill(vel.covariance.begin(), vel.covariance.end(), 0.0f);
+    vel.covariance[0] = std::max(calibration.vx_variance_floor,
+      (qRight + qLeft + 2.0 * cross) / (4.0 * timeSquared));
+    vel.covariance[4] = calibration.lateral_velocity_variance;
+    vel.covariance[8] = std::max(calibration.yaw_rate_variance_floor,
+      (qRight + qLeft - 2.0 * cross) / (axle * axle * timeSquared));
+    vel.covariance[2] = vel.covariance[6] = (qRight - qLeft) / (2.0 * axle * timeSquared);
 
-    Matrix invCovar(2, 2);
-    invCovar(0, 0) = kr * fabs(rightWheelDist);
-    invCovar(0, 1) = 0.0;
-    invCovar(1, 0) = 0.0;
-    invCovar(1, 1) = kl * fabs(leftWheelDist);
+    // Accumulated pose diffusion uses this interval, not the rolling window.
+    // q0 describes window endpoint uncertainty; treating it as fresh independent
+    // pose noise every packet would double-count shared encoder endpoints.
+    Matrix incrementNoise(2, 2);
+    incrementNoise(0, 0) = calibration.right_noise_k * std::abs(rightWheelDist);
+    incrementNoise(1, 1) = calibration.left_noise_k * std::abs(leftWheelDist);
+    incrementNoise(0, 1) = incrementNoise(1, 0) = calibration.wheel_error_correlation *
+      std::sqrt(incrementNoise(0, 0)) * std::sqrt(incrementNoise(1, 1));
 
+    // Jacobians of the exact integration above (wheel order: right, left).
+    const double dxDTheta = deltaDist * (sincDerivative * cosMid - 0.5 * sinc * sinMid);
+    const double dyDTheta = deltaDist * (sincDerivative * sinMid + 0.5 * sinc * cosMid);
     Matrix Finc(3, 2);
-    Finc(0, 0) = (cosYawAndHalfDelta / 2.0) - (distOverTwoWB * sinYawAndHalfDelta);
-    Finc(0, 1) = (cosYawAndHalfDelta / 2.0) + (distOverTwoWB * sinYawAndHalfDelta);
-    Finc(1, 0) = (sinYawAndHalfDelta / 2.0) + (distOverTwoWB * cosYawAndHalfDelta);
-    Finc(1, 1) = (sinYawAndHalfDelta / 2.0) - (distOverTwoWB * cosYawAndHalfDelta);
-    Finc(2, 0) = (1.0 / model.getAxleLength());
-    Finc(2, 1) = (-1.0 / model.getAxleLength());
-    Matrix FincT = boost::numeric::ublas::trans(Finc);
+    Finc(0, 0) = 0.5 * sinc * cosMid + dxDTheta / axle;
+    Finc(0, 1) = 0.5 * sinc * cosMid - dxDTheta / axle;
+    Finc(1, 0) = 0.5 * sinc * sinMid + dyDTheta / axle;
+    Finc(1, 1) = 0.5 * sinc * sinMid - dyDTheta / axle;
+    Finc(2, 0) = 1.0 / axle;
+    Finc(2, 1) = -1.0 / axle;
+    Matrix FincT = ublas::trans(Finc);
+    Matrix incrementCovar = ublas::prod(incrementNoise, FincT);
+    incrementCovar = ublas::prod(Finc, incrementCovar);
 
-    Matrix Fp(3, 3);
-    Fp(0, 0) = 1.0;
-    Fp(0, 1) = 0.0;
-    Fp(0, 2) = (-deltaDist) * sinYawAndHalfDelta;
-    Fp(1, 0) = 0.0;
-    Fp(1, 1) = 1.0;
-    Fp(1, 2) = deltaDist * cosYawAndHalfDelta;
-    Fp(2, 0) = 0.0;
-    Fp(2, 1) = 0.0;
-    Fp(2, 2) = 1.0;
-    Matrix FpT = boost::numeric::ublas::trans(Fp);
-
-    Matrix velCovar = ublas::prod(invCovar, FincT);
-    velCovar = ublas::prod(Finc, velCovar);
-
-    vel.covariance[0] = velCovar(0, 0);
-    vel.covariance[1] = velCovar(0, 1);
-    vel.covariance[2] = velCovar(0, 2);
-    vel.covariance[3] = velCovar(1, 0);
-    vel.covariance[4] = velCovar(1, 1);
-    vel.covariance[5] = velCovar(1, 2);
-    vel.covariance[6] = velCovar(2, 0);
-    vel.covariance[7] = velCovar(2, 1);
-    vel.covariance[8] = velCovar(2, 2);
-
+    Matrix Fp(3, 3, 0.0);
+    Fp(0, 0) = Fp(1, 1) = Fp(2, 2) = 1.0;
+    Fp(0, 2) = -deltaY;
+    Fp(1, 2) = deltaX;
+    Matrix FpT = ublas::trans(Fp);
     Matrix poseCovarTmp = ublas::prod(poseCovar, FpT);
     poseCovarTmp = ublas::prod(Fp, poseCovarTmp);
-    poseCovar = addMatrices(poseCovarTmp, velCovar);
+    poseCovar = addMatrices(poseCovarTmp, incrementCovar);
 
-    pose.covariance[0] = poseCovar(0, 0);
-    pose.covariance[1] = poseCovar(0, 1);
-    pose.covariance[2] = poseCovar(0, 2);
-    pose.covariance[3] = poseCovar(1, 0);
-    pose.covariance[4] = poseCovar(1, 1);
-    pose.covariance[5] = poseCovar(1, 2);
-    pose.covariance[6] = poseCovar(2, 0);
-    pose.covariance[7] = poseCovar(2, 1);
-    pose.covariance[8] = poseCovar(2, 2);
+    updatePoseCovariance();
 
     // Update pose
     pose.x += deltaX;
@@ -286,6 +354,20 @@ namespace create {
     pose.yaw = util::normalizeAngle(pose.yaw + deltaYaw);
 
     prevOnDataTime = curTime;
+    odometryState.pose = pose;
+    odometryState.velocity = vel;
+    odometryState.sample_time = curTime;
+    ++odometryState.sequence;
+    odometryState.valid = true;
+    odometryState.left_distance = totalLeftDist;
+    odometryState.right_distance = totalRightDist;
+    odometryState.left_velocity = measuredLeftVel;
+    odometryState.right_velocity = measuredRightVel;
+    odometryState.window_duration = windowTime;
+    odometryState.window_left_distance = windowLeft;
+    odometryState.window_right_distance = windowRight;
+    odometryState.window_left_travel = leftTravel;
+    odometryState.window_right_travel = rightTravel;
 
     // Make user registered callbacks, if any
     // TODO
@@ -314,7 +396,10 @@ namespace create {
 
   void Create::disconnect() {
     serial->disconnect();
+    std::lock_guard<std::mutex> lock(odometryMutex);
     firstOnData = true;
+    odometryState.valid = false;
+    velocityHistory.clear();
   }
 
   //void Create::reset() {
@@ -404,8 +489,11 @@ namespace create {
   bool Create::driveWheels(const float& leftVel, const float& rightVel) {
     const float boundedLeftVel = BOUND_CONST(leftVel, -model.getMaxVelocity(), model.getMaxVelocity());
     const float boundedRightVel = BOUND_CONST(rightVel, -model.getMaxVelocity(), model.getMaxVelocity());
-    requestedLeftVel = boundedLeftVel;
-    requestedRightVel = boundedRightVel;
+    {
+      std::lock_guard<std::mutex> lock(odometryMutex);
+      requestedLeftVel = boundedLeftVel;
+      requestedRightVel = boundedRightVel;
+    }
     if (model.getVersion() > V_1) {
       int16_t leftCmd = roundf(boundedLeftVel * 1000);
       int16_t rightCmd = roundf(boundedRightVel * 1000);
@@ -619,7 +707,59 @@ namespace create {
   }
 
   void Create::setDtHistoryLength(const uint8_t& dtHistoryLength) {
+    if (dtHistoryLength == 0) throw std::invalid_argument("velocity window must contain at least one interval");
+    std::lock_guard<std::mutex> lock(odometryMutex);
     this->dtHistoryLength = dtHistoryLength;
+    velocityHistory.clear();
+  }
+
+  void Create::setOdometryLimits(double max_gap, double max_wheel_speed,
+                                double timing_tolerance) {
+    if (!std::isfinite(max_gap) || max_gap <= 0.0 ||
+        !std::isfinite(max_wheel_speed) || max_wheel_speed < 0.0 ||
+        !std::isfinite(timing_tolerance) || timing_tolerance < 0.0) {
+      throw std::invalid_argument("invalid odometry limits");
+    }
+    std::lock_guard<std::mutex> lock(odometryMutex);
+    odometryMaxGap = max_gap;
+    maxEncoderWheelSpeed = max_wheel_speed;
+    encoderTimingTolerance = timing_tolerance;
+  }
+
+  OdometryState Create::getOdometryState() const {
+    std::lock_guard<std::mutex> lock(odometryMutex);
+    return odometryState;
+  }
+
+  void Create::setOdometryCalibration(const OdometryCalibration& calibration) {
+    for (double value : {calibration.left_distance_scale, calibration.right_distance_scale,
+                         calibration.axle_length}) {
+      if (!std::isfinite(value) || value <= 0.0)
+        throw std::invalid_argument("odometry geometry must be finite and positive");
+    }
+    for (double value : {calibration.left_noise_k, calibration.right_noise_k,
+                         calibration.left_noise_q0, calibration.right_noise_q0,
+                         calibration.vx_variance_floor, calibration.yaw_rate_variance_floor,
+                         calibration.lateral_velocity_variance, calibration.initial_yaw_variance,
+                         calibration.yaw_orientation_variance_floor, calibration.yaw_discontinuity_variance}) {
+      if (!std::isfinite(value) || value < 0.0)
+        throw std::invalid_argument("odometry noise variances must be finite and nonnegative");
+    }
+    if (!std::isfinite(calibration.wheel_error_correlation) ||
+        std::abs(calibration.wheel_error_correlation) > 1.0)
+      throw std::invalid_argument("wheel error correlation must be in [-1, 1]");
+    std::lock_guard<std::mutex> lock(odometryMutex);
+    if (!firstOnData || odometryState.sequence != 0)
+      throw std::logic_error("configure odometry calibration before receiving sensor data");
+    odometryCalibration = calibration;
+    poseCovar(2, 2) = calibration.initial_yaw_variance;
+    updatePoseCovariance();
+    odometryState.pose = pose;
+  }
+
+  OdometryCalibration Create::getOdometryCalibration() const {
+    std::lock_guard<std::mutex> lock(odometryMutex);
+    return odometryCalibration;
   }
 
   bool Create::isWheeldrop() const {
@@ -1095,26 +1235,32 @@ namespace create {
   }
 
   float Create::getLeftWheelDistance() const {
+    std::lock_guard<std::mutex> lock(odometryMutex);
     return totalLeftDist;
   }
 
   float Create::getRightWheelDistance() const {
+    std::lock_guard<std::mutex> lock(odometryMutex);
     return totalRightDist;
   }
 
   float Create::getMeasuredLeftWheelVel() const {
+    std::lock_guard<std::mutex> lock(odometryMutex);
     return measuredLeftVel;
   }
 
   float Create::getMeasuredRightWheelVel() const {
+    std::lock_guard<std::mutex> lock(odometryMutex);
     return measuredRightVel;
   }
 
   float Create::getRequestedLeftWheelVel() const {
+    std::lock_guard<std::mutex> lock(odometryMutex);
     return requestedLeftVel;
   }
 
   float Create::getRequestedRightWheelVel() const {
+    std::lock_guard<std::mutex> lock(odometryMutex);
     return requestedRightVel;
   }
 
@@ -1139,10 +1285,12 @@ namespace create {
   }
 
   Pose Create::getPose() const {
+    std::lock_guard<std::mutex> lock(odometryMutex);
     return pose;
   }
 
   Vel Create::getVel() const {
+    std::lock_guard<std::mutex> lock(odometryMutex);
     return vel;
   }
 

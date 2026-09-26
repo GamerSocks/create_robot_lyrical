@@ -38,6 +38,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <string>
 #include <unistd.h>
 #include <deque>
+#include <mutex>
 
 #include "create/serial_stream.h"
 #include "create/serial_query.h"
@@ -46,8 +47,47 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "create/util.h"
 
 namespace create {
+  // All noise parameters refer to corrected wheel travel, in SI units.
+  struct OdometryCalibration {
+    double left_distance_scale = 1.0;
+    double right_distance_scale = 1.0;
+    double axle_length = 0.0;  // Initialized from the selected robot model.
+    double left_noise_k = 1.0;  // m; legacy provisional values, not measurements.
+    double right_noise_k = 1.0;
+    double left_noise_q0 = 0.0;  // m^2, once per displacement observation.
+    double right_noise_q0 = 0.0;
+    double wheel_error_correlation = 0.0;  // Whole-window correlation, [-1, 1].
+    double vx_variance_floor = 1e-6;  // (m/s)^2; configurable engineering priors.
+    double yaw_rate_variance_floor = 1e-6;  // (rad/s)^2.
+    double initial_yaw_variance = 0.0;  // rad^2, propagated from the initial heading.
+    double yaw_orientation_variance_floor = 1e-6;  // rad^2, publication floor.
+    double yaw_discontinuity_variance = 3.289868133696453;  // rad^2, pi^2/3 per lost interval.
+    double lateral_velocity_variance = 1e-5;  // No-side-slip constraint, (m/s)^2.
+  };
+
+  // Consumers must check valid: after a discontinuity pose/sample_time remain
+  // the last accepted estimate, not a new measurement of the missing interval.
+  struct OdometryState {
+    Pose pose;
+    Vel velocity;
+    std::chrono::steady_clock::time_point sample_time{};
+    uint64_t sequence = 0;
+    uint64_t discontinuities = 0;
+    bool valid = false;
+    double left_distance = 0.0;
+    double right_distance = 0.0;
+    double left_velocity = 0.0;
+    double right_velocity = 0.0;
+    double window_duration = 0.0;
+    double window_left_distance = 0.0;
+    double window_right_distance = 0.0;
+    double window_left_travel = 0.0;
+    double window_right_travel = 0.0;
+  };
+
   class Create {
     private:
+      friend class CreateTestAccess;
       typedef boost::numeric::ublas::matrix<float> Matrix;
 
       enum CreateLED {
@@ -76,13 +116,20 @@ namespace create {
       create::Pose pose;
       create::Vel vel;
 
-      uint32_t prevTicksLeft;
-      uint32_t prevTicksRight;
+      uint16_t prevTicksLeft;
+      uint16_t prevTicksRight;
       float totalLeftDist;
       float totalRightDist;
       bool firstOnData;
       std::chrono::time_point<std::chrono::steady_clock> prevOnDataTime;
-      std::deque<float> dtHistory;
+      struct WheelInterval { double dt; float left; float right; };
+      std::deque<WheelInterval> velocityHistory;
+      mutable std::mutex odometryMutex;
+      OdometryState odometryState;
+      OdometryCalibration odometryCalibration;
+      double odometryMaxGap;
+      double maxEncoderWheelSpeed;
+      double encoderTimingTolerance;
       uint8_t dtHistoryLength;
 
       Matrix poseCovar;
@@ -95,7 +142,10 @@ namespace create {
       void init(bool install_signal_handler);
       // Add two matrices and handle overflow case
       Matrix addMatrices(const Matrix &A, const Matrix &B) const;
+      void updatePoseCovariance();
       void onData();
+      void onDataAt(std::chrono::steady_clock::time_point curTime);
+      void rebaseline(std::chrono::steady_clock::time_point curTime, bool discontinuity);
       bool updateLEDs();
 
       // Flag to enable/disable the workaround for some 6xx incorrectly reporting OI mode
@@ -345,11 +395,28 @@ namespace create {
 
       /**
        * \brief Set dtHistoryLength parameter.
-       * Used to configure the size of the buffer for calculating average time delta (dt).
-       * between onData calls, which in turn is used for velocity calculation.
-       * \param dtHistoryLength number of historical samples to use for calculating average dt.
+       * Compatibility API: number of complete displacement/time intervals in the
+       * velocity window (default 5). Zero is invalid. Clears the previous window.
+       * \param dtHistoryLength number of intervals, in [1, 255].
        */
       void setDtHistoryLength(const uint8_t& dtHistoryLength);
+
+      /** Maximum accepted interval in seconds before rebaselining (default 1).
+       * Optional encoder speed bound in m/s, disabled at zero (default).
+       * Timing tolerance in seconds accommodates host receive jitter (default .05).
+       * A rejected interval increments discontinuities and invalidates odometry
+       * until the next complete interval. Pose does not recover lost movement.
+       */
+      void setOdometryLimits(double max_gap, double max_wheel_speed = 0.0,
+                             double timing_tolerance = 0.05);
+
+      /** Coherent copy of pose, twist, wheel state, window and receive timestamp. */
+      OdometryState getOdometryState() const;
+
+      // Configure before receiving the first sensor sample. Geometry changes must
+      // not mix corrected and uncorrected distances within an integration/window.
+      void setOdometryCalibration(const OdometryCalibration& calibration);
+      OdometryCalibration getOdometryCalibration() const;
 
       /**
        * \return true if a left or right wheeldrop is detected, false otherwise.

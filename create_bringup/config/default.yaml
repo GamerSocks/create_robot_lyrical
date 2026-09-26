@@ -1,22 +1,84 @@
 create_driver:
   ros__parameters:
-    # The device path for the robot
+    # Serial device connected to the robot.
     dev: "/dev/ttyUSB0"
 
-    # Baud rate. Passing this parameter overwrites the inferred value based on the robot_model
+    # CREATE_2 (also Roomba 600/700 series), CREATE_1, or ROOMBA_400.
+    # Model-specific launch files override this setting.
+    robot_model: "CREATE_2"
+
+    # Omit to select by model: CREATE_2 = 115200, others = 57600 bit/s.
     # baud: 115200
 
-    # Base frame ID
-    base_frame: "base_footprint"
+    # Subtract one from reported OI mode on affected firmware; enable only if needed.
+    oi_mode_workaround: false
 
-    # Odometry frame ID
+    # Odometry child frame (robot body) and parent frame (local starting reference).
+    base_frame: "base_footprint"
     odom_frame: "odom"
 
-    # Time (s) without receiving a velocity command before stopping the robot
+    # Seconds without a velocity command before stopping the robot.
     latch_cmd_duration: 0.2
 
-    # Internal loop update rate (Hz)
+    # Driver publication/update loop rate (Hz), independent of sensor sample rate.
     loop_hz: 10.0
 
-    # Whether to publish the transform between odom_frame and base_frame
+    # Publish odom_frame -> base_frame TF; disable if another node publishes this transform.
     publish_tf: true
+
+    # Number of sensor intervals in the rolling velocity window (integer, 1..255).
+    # Velocity = summed displacement / summed duration; larger windows add smoothing and lag.
+    velocity_window_size: 5
+
+    # Seconds (> 0): reject longer sample gaps and flag stale odometry.
+    odometry_timeout: 1.0
+
+    # Create 2 corrected wheel-speed plausibility limit (m/s); 0 disables the check.
+    max_encoder_wheel_speed: 0.0
+
+    # Extra timing allowance (s, >= 0) for that speed check, to tolerate arrival jitter.
+    encoder_timing_tolerance: 0.05
+
+    # Positive multipliers for systematic wheel-distance bias: corrected = raw * scale.
+    left_wheel_distance_scale: 1.0
+    right_wheel_distance_scale: 1.0
+
+    # Effective wheel separation (m, > 0). Omit for model default:
+    # CREATE_2 = 0.235; CREATE_1 and ROOMBA_400 = 0.258.
+    # odometry_axle_length: 0.235
+
+    # Wheel travel variance: q_i = k_i * sum(abs(corrected wheel increments)) + q0_i.
+    # Velocity uses the recent window; pose diffusion accumulates over the full trajectory.
+    # k_i units: m^2/m; nonnegative. These legacy 1.0 defaults require calibration.
+    left_wheel_noise_k: 1.0
+    right_wheel_noise_k: 1.0
+
+    # Endpoint variance q0_i (m^2, >= 0): omit for automatic defaults.
+    # CREATE_2: corrected metres-per-tick squared / 6; other models: 0.
+    # Examples below are approximate CREATE_2 defaults at distance scales of 1.0.
+    # Applied once per velocity window and once to accumulated yaw, not per sample.
+    # left_wheel_noise_q0: 3.294e-8
+    # right_wheel_noise_q0: 3.294e-8
+
+    # Wheel-error correlation rho in [-1, 1]; c = rho * sqrt(q_R * q_L).
+    # Zero assumes uncorrelated left/right wheel errors.
+    wheel_error_correlation: 0.0
+
+    # Minimum published forward-velocity variance, (m/s)^2.
+    vx_variance_floor: 1.0e-6
+
+    # Minimum published wheel yaw-rate variance, (rad/s)^2.
+    yaw_rate_variance_floor: 1.0e-6
+
+    # Variance of the assumed zero lateral velocity vy, (m/s)^2.
+    lateral_velocity_variance: 1.0e-5
+
+    # Initial yaw variance P0 (rad^2); 0 defines yaw relative to the starting heading.
+    initial_yaw_variance: 0.0
+
+    # Minimum published yaw-orientation variance (rad^2), separate from yaw rate.
+    yaw_orientation_variance_floor: 1.0e-6
+
+    # Added yaw variance per discarded interval (rad^2); cannot recover the lost turn.
+    # Default pi^2/3 represents a uniform unknown heading in [-pi, pi].
+    yaw_discontinuity_variance: 3.289868133696453

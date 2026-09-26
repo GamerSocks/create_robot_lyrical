@@ -122,6 +122,8 @@ private:
   std_msgs::msg::Int16 int16_msg_;
   sensor_msgs::msg::JointState joint_state_msg_;
   bool is_running_slowly_;
+  uint64_t last_odom_sequence_ = 0;
+  double odometry_timeout_;
 
   // ROS params
   std::string dev_;
@@ -153,6 +155,7 @@ private:
   void updateSafetyDiagnostics(diagnostic_updater::DiagnosticStatusWrapper& stat);
   void updateSerialDiagnostics(diagnostic_updater::DiagnosticStatusWrapper& stat);
   void updateModeDiagnostics(diagnostic_updater::DiagnosticStatusWrapper& stat);
+  void updateOdometryDiagnostics(diagnostic_updater::DiagnosticStatusWrapper& stat);
   void updateDriverDiagnostics(diagnostic_updater::DiagnosticStatusWrapper& stat);
   void publishOdom();
   void publishJointState();
