@@ -33,7 +33,10 @@ POSSIBILITY OF SUCH DAMAGE.
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
+#include "rcl_interfaces/msg/parameter_descriptor.hpp"
+#include "rcl_interfaces/msg/set_parameters_result.hpp"
 #include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 
 CreateDriver::CreateDriver()
@@ -53,6 +56,28 @@ CreateDriver::CreateDriver()
   loop_hz_ = declare_parameter<double>("loop_hz", 10.0);
   publish_tf_ = declare_parameter<bool>("publish_tf", true);
   oi_mode_workaround_ = declare_parameter<bool>("oi_mode_workaround", false);
+
+  balance_parameter_callback_ = add_on_set_parameters_callback(
+    [](const std::vector<rclcpp::Parameter>& parameters) {
+      rcl_interfaces::msg::SetParametersResult result;
+      result.successful = true;
+      for (const auto& parameter : parameters) {
+        if (parameter.get_name() == "wheel_balance" &&
+            (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE ||
+            !std::isfinite(parameter.as_double()) || std::abs(parameter.as_double()) >= 1.0)) {
+          result.successful = false;
+          result.reason = "wheel_balance must be a finite double strictly between -1 and 1";
+          break;
+        }
+      }
+      return result;
+    });
+  rcl_interfaces::msg::ParameterDescriptor balance_parameter;
+  balance_parameter.description =
+    "Wheel command trim: left *= (1 + balance), right *= (1 - balance). "
+    "Positive biases forward travel right; does not alter measured odometry.";
+  balance_parameter.additional_constraints = "Finite and strictly between -1 and 1";
+  declare_parameter<double>("wheel_balance", 0.0, balance_parameter);
 
   rcl_interfaces::msg::ParameterDescriptor odometry_parameter;
   odometry_parameter.read_only = true;
@@ -239,7 +264,7 @@ CreateDriver::~CreateDriver()
 
 void CreateDriver::cmdVelCallback(geometry_msgs::msg::Twist::UniquePtr msg)
 {
-  robot_->drive(msg->linear.x, msg->angular.z);
+  robot_->drive(msg->linear.x, msg->angular.z, get_parameter("wheel_balance").as_double());
   last_cmd_vel_time_ = now();
 }
 

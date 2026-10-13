@@ -11,6 +11,7 @@ find_package(diagnostic_msgs REQUIRED)
 find_package(diagnostic_updater REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(nav_msgs REQUIRED)
+find_package(rcl_interfaces REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -27,6 +28,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
   diagnostic_updater::diagnostic_updater
   geometry_msgs::geometry_msgs
   nav_msgs::nav_msgs
+  rcl_interfaces::rcl_interfaces
   rclcpp::rclcpp
   sensor_msgs::sensor_msgs
   std_msgs::std_msgs

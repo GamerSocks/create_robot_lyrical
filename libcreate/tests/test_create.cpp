@@ -97,6 +97,89 @@ const double METRES_PER_TICK =
 using create::CreateTestAccess;
 }
 
+TEST(CreateDrive, DefaultBalancePreservesWheelCommands)
+{
+  create::Create robot(create::RobotModel::CREATE_2, false);
+  const float half_axle = create::RobotModel::CREATE_2.getAxleLength() / 2;
+  robot.drive(.2f, .5f);
+  EXPECT_NEAR(robot.getRequestedLeftWheelVel(), .2f - half_axle * .5f, 1e-7);
+  EXPECT_NEAR(robot.getRequestedRightWheelVel(), .2f + half_axle * .5f, 1e-7);
+
+  // Zero trim retains the existing independent wheel saturation behavior.
+  const float maximum = create::RobotModel::CREATE_2.getMaxVelocity();
+  robot.drive(maximum, .5f);
+  EXPECT_NEAR(robot.getRequestedLeftWheelVel(), maximum - half_axle * .5f, 1e-7);
+  EXPECT_FLOAT_EQ(robot.getRequestedRightWheelVel(), maximum);
+}
+
+TEST(CreateDrive, BalanceScalesForwardReverseAndTurningCommands)
+{
+  create::Create robot(create::RobotModel::CREATE_2, false);
+  const float half_axle = create::RobotModel::CREATE_2.getAxleLength() / 2;
+  for (const double balance : {-.1, .1}) {
+    for (const float forward : {-.2f, 0.f, .2f}) {
+      for (const float angular : {-.5f, 0.f, .5f}) {
+        robot.drive(forward, angular, balance);
+        EXPECT_NEAR(robot.getRequestedLeftWheelVel(),
+                    (forward - half_axle * angular) * (1 + balance), 1e-7);
+        EXPECT_NEAR(robot.getRequestedRightWheelVel(),
+                    (forward + half_axle * angular) * (1 - balance), 1e-7);
+      }
+    }
+  }
+}
+
+TEST(CreateDrive, BalancePreservesWheelRatioAtSaturation)
+{
+  create::Create robot(create::RobotModel::CREATE_2, false);
+  const float maximum = create::RobotModel::CREATE_2.getMaxVelocity();
+  for (const double balance : {-.2, .2}) {
+    for (const float direction : {-1.f, 1.f}) {
+      robot.drive(direction * maximum, 0, balance);
+      const float left = robot.getRequestedLeftWheelVel();
+      const float right = robot.getRequestedRightWheelVel();
+      EXPECT_LE(std::abs(left), maximum);
+      EXPECT_LE(std::abs(right), maximum);
+      EXPECT_NEAR(left, direction * maximum * (1 + balance) / (1 + std::abs(balance)), 1e-7);
+      EXPECT_NEAR(right, direction * maximum * (1 - balance) / (1 + std::abs(balance)), 1e-7);
+      EXPECT_NEAR(left / right, (1 + balance) / (1 - balance), 1e-6);
+    }
+  }
+}
+
+TEST(CreateDrive, InvalidBalanceLeavesRequestedWheelSpeedsUnchanged)
+{
+  create::Create robot(create::RobotModel::CREATE_2, false);
+  robot.drive(.2f, 0, .02);
+  const float left = robot.getRequestedLeftWheelVel();
+  const float right = robot.getRequestedRightWheelVel();
+  for (const double balance : {-1.1, -1.0, 1.0, 1.1,
+                              -std::numeric_limits<double>::infinity(),
+                              std::numeric_limits<double>::infinity(),
+                              std::numeric_limits<double>::quiet_NaN()}) {
+    EXPECT_FALSE(robot.drive(.3f, .5f, balance));
+    EXPECT_FLOAT_EQ(robot.getRequestedLeftWheelVel(), left);
+    EXPECT_FLOAT_EQ(robot.getRequestedRightWheelVel(), right);
+  }
+}
+
+TEST(CreateDrive, BalanceDoesNotAlterEncoderOdometry)
+{
+  create::Create robot(create::RobotModel::CREATE_2, false);
+  CreateTestAccess::sample(robot, 0, 0, 1.0);
+  robot.drive(.2f, 0, .1);
+  ASSERT_GT(robot.getRequestedLeftWheelVel(), robot.getRequestedRightWheelVel());
+  CreateTestAccess::sample(robot, 100, 100, 1.1);
+  const auto state = robot.getOdometryState();
+  ASSERT_TRUE(state.valid);
+  EXPECT_NEAR(state.left_distance, 100 * METRES_PER_TICK, 1e-7);
+  EXPECT_NEAR(state.right_distance, 100 * METRES_PER_TICK, 1e-7);
+  EXPECT_NEAR(state.pose.x, 100 * METRES_PER_TICK, 1e-7);
+  EXPECT_NEAR(state.velocity.x, 1000 * METRES_PER_TICK, 1e-6);
+  EXPECT_FLOAT_EQ(state.pose.yaw, 0);
+  EXPECT_FLOAT_EQ(state.velocity.yaw, 0);
+}
+
 TEST(CreateOdometry, SignedEncoderWrapsBothWays)
 {
   for (const auto &counts : {std::make_tuple(65530, 5, 11), std::make_tuple(5, 65530, -11),

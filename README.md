@@ -162,6 +162,7 @@ $ ros2 launch create_bringup create_2.launch config:=/abs/path/to/config.yaml de
 `base_frame`  |  The robot's base frame ID | `base_footprint`
 `odom_frame`  |  The robot's odometry frame ID | `odom`
 `latch_cmd_duration` | If this many seconds passes without receiving a velocity command the robot stops | `0.2`
+`wheel_balance` | Runtime wheel-command trim, finite and strictly between -1 and 1. Left speed is multiplied by `1 + balance`, right by `1 - balance`; positive biases forward travel right. Does not change encoder odometry. | `0.0`
 `loop_hz`     |  Frequency of internal update loop |  `10.0`
 `publish_tf`  |  Publish the transform from `odom_frame` to `base_frame` | `true`
 `robot_model` |  The type of robot being controlled (supported values: `ROOMBA_400`, `CREATE_1` and `CREATE_2`) | `CREATE_2`
