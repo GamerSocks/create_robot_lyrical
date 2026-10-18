@@ -1,3 +1,5 @@
+// Copyright 2026 GamerSocks
+
 #include <gtest/gtest.h>
 
 #include "create_driver/wheel_speed_controller.h"
