@@ -63,6 +63,25 @@ TEST(WheelSpeedController, StopAndReversalRestartWithoutCorrection)
   EXPECT_EQ(controller.update(-0.2, -0.2, 0.2, 0.2, true, DT), std::make_pair(-0.2, -0.2));
 }
 
+TEST(WheelSpeedController, DeadbandHoldsSmallChangesButNotNewTargets)
+{
+  WheelSpeedController controller({0.0, 3.0, 0.1, 0.005});
+  controller.update(0.25, 0.25, 0.25, 0.25, true, DT);
+  // A 1 mm/s error changes the integral command by far less than 5 mm/s per step.
+  const auto held = controller.update(0.25, 0.25, 0.249, 0.249, true, DT);
+  for (int step = 0; step < 10; ++step) {
+    EXPECT_EQ(controller.update(0.25, 0.25, 0.249, 0.249, true, DT), held);
+  }
+  // A persistent error still accumulates until the change exceeds the deadband.
+  std::pair<double, double> command = held;
+  for (int step = 0; step < 200 && command == held; ++step) {
+    command = controller.update(0.25, 0.25, 0.24, 0.24, true, DT);
+  }
+  EXPECT_GE(command.first - held.first, 0.005);
+  // A new target is applied immediately.
+  EXPECT_NEAR(controller.update(0.3, 0.3, 0.24, 0.24, true, DT).first, 0.3, 0.01);
+}
+
 TEST(WheelSpeedController, InvalidMeasurementPassesTargetsThrough)
 {
   WheelSpeedController controller(GAINS);
