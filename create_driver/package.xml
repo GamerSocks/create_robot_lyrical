@@ -14,6 +14,7 @@
 
   <buildtool_depend>ament_cmake</buildtool_depend>
 
+  <depend>control_toolbox</depend>
   <depend>create_msgs</depend>
   <depend>diagnostic_msgs</depend>
   <depend>diagnostic_updater</depend>
@@ -27,6 +28,7 @@
   <depend>tf2_geometry_msgs</depend>
   <depend>tf2_ros</depend>
 
+  <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 
