@@ -70,8 +70,7 @@ CreateDriver::CreateDriver()
           break;
         }
         if ((parameter.get_name() == "wheel_speed_p" || parameter.get_name() == "wheel_speed_i" ||
-             parameter.get_name() == "wheel_speed_max_correction" ||
-             parameter.get_name() == "wheel_speed_command_deadband") &&
+             parameter.get_name() == "wheel_speed_max_correction") &&
             (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE ||
             !std::isfinite(parameter.as_double()) || parameter.as_double() < 0.0)) {
           result.successful = false;
@@ -93,7 +92,6 @@ CreateDriver::CreateDriver()
   declare_parameter<double>("wheel_speed_p", 0.3);
   declare_parameter<double>("wheel_speed_i", 3.0);
   declare_parameter<double>("wheel_speed_max_correction", 0.1);
-  declare_parameter<double>("wheel_speed_command_deadband", 0.0);
   setWheelSpeedGains();
   wheel_speed_gains_callback_ = add_post_set_parameters_callback(
     [this](const std::vector<rclcpp::Parameter>&) {setWheelSpeedGains();});
@@ -298,8 +296,7 @@ void CreateDriver::setWheelSpeedGains()
 {
   wheel_speed_controller_.setGains({
     get_parameter("wheel_speed_p").as_double(), get_parameter("wheel_speed_i").as_double(),
-    get_parameter("wheel_speed_max_correction").as_double(),
-    get_parameter("wheel_speed_command_deadband").as_double()});
+    get_parameter("wheel_speed_max_correction").as_double()});
 }
 
 void CreateDriver::controlWheelSpeeds()

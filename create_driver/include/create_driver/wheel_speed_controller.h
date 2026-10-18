@@ -16,8 +16,6 @@ namespace create_driver
  * Each wheel command is its target speed plus a PI correction of the error between
  * target and encoder-measured speed, limited to +/- max_correction. Integration pauses
  * while the correction saturates and restarts from zero when the wheel stops or reverses.
- * While the target is unchanged, a command closer than command_deadband to the previous
- * one is not changed: the firmware's speed control reacts to every new setpoint.
  */
 class WheelSpeedController
 {
@@ -27,7 +25,6 @@ public:
     double p = 0.0;
     double i = 0.0;
     double max_correction = 0.0;  // m/s
-    double command_deadband = 0.0;  // m/s
   };
 
   explicit WheelSpeedController(const Gains & gains);
@@ -45,12 +42,10 @@ private:
   {
     control_toolbox::Pid pid;
     double last_target = 0.0;
-    double last_command = 0.0;
   };
 
-  double updateWheel(Wheel & wheel, double target, double measured, bool measurement_valid, double dt) const;
+  static double updateWheel(Wheel & wheel, double target, double measured, bool measurement_valid, double dt);
 
-  double command_deadband_ = 0.0;
   Wheel left_;
   Wheel right_;
 };

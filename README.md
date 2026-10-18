@@ -167,7 +167,6 @@ $ ros2 launch create_bringup create_2.launch config:=/abs/path/to/config.yaml de
 `wheel_speed_p` | Proportional gain of the wheel speed correction ((m/s) per (m/s) error), runtime adjustable | `0.3`
 `wheel_speed_i` | Integral gain of the wheel speed correction (1/s), runtime adjustable | `3.0`
 `wheel_speed_max_correction` | Limit of the speed correction per wheel (m/s); integration pauses at the limit | `0.1`
-`wheel_speed_command_deadband` | While the target is unchanged, keep the previous wheel command unless the corrected one differs by at least this much (m/s); the firmware reacts to every new setpoint with a small speed transient. `0` disables it | `0.0`
 `loop_hz`     |  Frequency of internal update loop |  `10.0`
 `publish_tf`  |  Publish the transform from `odom_frame` to `base_frame` | `true`
 `robot_model` |  The type of robot being controlled (supported values: `ROOMBA_400`, `CREATE_1` and `CREATE_2`) | `CREATE_2`
