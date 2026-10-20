@@ -2,6 +2,8 @@
 
 #include "create_driver/wheel_speed_controller.h"
 
+#include <algorithm>
+
 namespace create_driver
 {
 
@@ -48,7 +50,10 @@ double WheelSpeedController::updateWheel(
     wheel.pid.reset();
     return target;
   }
-  return target + wheel.pid.compute_command(target - measured, dt);
+  const double command = target + wheel.pid.compute_command(target - measured, dt);
+  // Never drive against the target direction, e.g. when the lagging measurement overshoots
+  // a ramp-down to a small target.
+  return target > 0.0 ? std::max(command, 0.0) : std::min(command, 0.0);
 }
 
 }  // namespace create_driver

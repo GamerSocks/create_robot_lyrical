@@ -16,6 +16,7 @@ namespace create_driver
  * Each wheel command is its target speed plus a PI correction of the error between
  * target and encoder-measured speed, limited to +/- max_correction. Integration pauses
  * while the correction saturates and restarts from zero when the wheel stops or reverses.
+ * The command never points against the target direction.
  */
 class WheelSpeedController
 {

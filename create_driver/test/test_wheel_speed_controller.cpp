@@ -63,6 +63,17 @@ TEST(WheelSpeedController, StopAndReversalRestartWithoutCorrection)
   EXPECT_EQ(controller.update(-0.2, -0.2, 0.2, 0.2, true, DT), std::make_pair(-0.2, -0.2));
 }
 
+TEST(WheelSpeedController, CommandNeverOpposesTarget)
+{
+  WheelSpeedController controller(GAINS);
+  // Measured speed far above a small target, as at the end of a ramp-down.
+  for (int step = 0; step < 50; ++step) {
+    const auto command = controller.update(0.01, -0.01, 0.2, -0.2, true, DT);
+    EXPECT_GE(command.first, 0.0);
+    EXPECT_LE(command.second, 0.0);
+  }
+}
+
 TEST(WheelSpeedController, InvalidMeasurementPassesTargetsThrough)
 {
   WheelSpeedController controller(GAINS);
