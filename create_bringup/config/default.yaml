@@ -20,11 +20,12 @@ create_driver:
     # Seconds without a velocity command before stopping the robot.
     latch_cmd_duration: 0.2
 
-    # Wheel command trim, finite and strictly between -1 and 1; 0 disables it.
-    # Positive biases forward travel right, negative left (e.g. 0.02 = +/-2%).
-    # Applies to commands only; encoder odometry calibration remains separate.
-    # Runtime: ros2 param set /create_driver wheel_balance 0.02
-    wheel_balance: 0.0
+    # Closed-loop wheel speed control on the encoder-measured wheel speeds (runs at loop_hz).
+    # Gains are adjustable at runtime with ros2 param set.
+    wheel_speed_control: false
+    wheel_speed_p: 0.3                # (m/s) correction per (m/s) error
+    wheel_speed_i: 3.0                # 1/s
+    wheel_speed_max_correction: 0.1   # m/s per wheel; integration pauses at this limit
 
     # Driver publication/update loop rate (Hz), independent of sensor sample rate.
     loop_hz: 10.0

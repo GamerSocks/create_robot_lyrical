@@ -57,18 +57,11 @@ CreateDriver::CreateDriver()
   publish_tf_ = declare_parameter<bool>("publish_tf", true);
   oi_mode_workaround_ = declare_parameter<bool>("oi_mode_workaround", false);
 
-  balance_parameter_callback_ = add_on_set_parameters_callback(
+  wheel_speed_gains_validation_ = add_on_set_parameters_callback(
     [](const std::vector<rclcpp::Parameter>& parameters) {
       rcl_interfaces::msg::SetParametersResult result;
       result.successful = true;
       for (const auto& parameter : parameters) {
-        if (parameter.get_name() == "wheel_balance" &&
-            (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE ||
-            !std::isfinite(parameter.as_double()) || std::abs(parameter.as_double()) >= 1.0)) {
-          result.successful = false;
-          result.reason = "wheel_balance must be a finite double strictly between -1 and 1";
-          break;
-        }
         if ((parameter.get_name() == "wheel_speed_p" || parameter.get_name() == "wheel_speed_i" ||
              parameter.get_name() == "wheel_speed_max_correction") &&
             (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE ||
@@ -80,14 +73,7 @@ CreateDriver::CreateDriver()
       }
       return result;
     });
-  rcl_interfaces::msg::ParameterDescriptor balance_parameter;
-  balance_parameter.description =
-    "Wheel command trim: left *= (1 + balance), right *= (1 - balance). "
-    "Positive biases forward travel right; does not alter measured odometry.";
-  balance_parameter.additional_constraints = "Finite and strictly between -1 and 1";
-  declare_parameter<double>("wheel_balance", 0.0, balance_parameter);
-
-  // Closed-loop wheel speed control; replaces wheel_balance while enabled.
+  // Closed-loop wheel speed control on the encoder-measured wheel speeds.
   declare_parameter<bool>("wheel_speed_control", false);
   declare_parameter<double>("wheel_speed_p", 0.3);
   declare_parameter<double>("wheel_speed_i", 3.0);
@@ -287,7 +273,7 @@ void CreateDriver::cmdVelCallback(geometry_msgs::msg::Twist::UniquePtr msg)
   target_linear_ = msg->linear.x;
   target_angular_ = msg->angular.z;
   if (!get_parameter("wheel_speed_control").as_bool()) {
-    robot_->drive(msg->linear.x, msg->angular.z, get_parameter("wheel_balance").as_double());
+    robot_->drive(msg->linear.x, msg->angular.z);
   }
   last_cmd_vel_time_ = now();
 }

@@ -106,7 +106,7 @@ private:
   rclcpp::Publisher<create_msgs::msg::Cliff>::SharedPtr cliff_pub_;
 
   rclcpp::TimerBase::SharedPtr loop_timer_;
-  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr balance_parameter_callback_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr wheel_speed_gains_validation_;
   rclcpp::node_interfaces::PostSetParametersCallbackHandle::SharedPtr wheel_speed_gains_callback_;
 
   tf2_ros::TransformBroadcaster tf_broadcaster_;
