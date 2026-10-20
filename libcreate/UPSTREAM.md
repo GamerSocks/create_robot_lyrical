@@ -18,6 +18,7 @@ Local changes include:
 - Boost.Asio `io_context` / `restart()` APIs and a `steady_timer` for the
   existing 50 ms serial query recovery interval.
 - Build documentation for the containing Lyrical repository.
+- Wheel odometry tests for the local odometry changes in `tests/test_odometry.cpp`.
 
 The package name remains `libcreate`, and its exported library target remains
 `create`. Colcon discovers this directory through its `package.xml` and orders
