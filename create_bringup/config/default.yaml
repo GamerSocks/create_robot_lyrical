@@ -21,7 +21,6 @@ create_driver:
     latch_cmd_duration: 0.2
 
     # Closed-loop wheel speed control on the encoder-measured wheel speeds (runs at loop_hz).
-    # Gains are adjustable at runtime with ros2 param set.
     wheel_speed_control: false
     wheel_speed_p: 0.3                # (m/s) correction per (m/s) error
     wheel_speed_i: 3.0                # 1/s
