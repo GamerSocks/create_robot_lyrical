@@ -6,6 +6,7 @@ add_compile_options(-Wall -Wextra -Wpedantic)
 find_package(libcreate REQUIRED)
 
 find_package(ament_cmake REQUIRED)
+find_package(control_toolbox REQUIRED)
 find_package(create_msgs REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(diagnostic_updater REQUIRED)
@@ -18,10 +19,16 @@ find_package(std_msgs REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 
+add_library(wheel_speed_controller STATIC src/wheel_speed_controller.cpp)
+target_compile_features(wheel_speed_controller PUBLIC cxx_std_20)
+target_include_directories(wheel_speed_controller PUBLIC include)
+target_link_libraries(wheel_speed_controller PUBLIC control_toolbox::control_toolbox)
+
 add_executable(${PROJECT_NAME} src/${PROJECT_NAME}.cpp)
 target_compile_features(${PROJECT_NAME} PRIVATE cxx_std_20)
 target_include_directories(${PROJECT_NAME} PRIVATE include)
 target_link_libraries(${PROJECT_NAME} PRIVATE
+  wheel_speed_controller
   create
   create_msgs::create_msgs
   diagnostic_msgs::diagnostic_msgs
@@ -44,6 +51,10 @@ if(BUILD_TESTING)
   set(ament_cmake_cppcheck_LANGUAGE c++)
   find_package(ament_lint_auto REQUIRED)
   ament_lint_auto_find_test_dependencies()
+
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_wheel_speed_controller test/test_wheel_speed_controller.cpp)
+  target_link_libraries(test_wheel_speed_controller wheel_speed_controller)
 endif()
 
 install(TARGETS ${PROJECT_NAME}

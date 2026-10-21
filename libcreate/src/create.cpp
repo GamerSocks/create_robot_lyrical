@@ -559,27 +559,9 @@ namespace create {
   }
 
   bool Create::drive(const float& xVel, const float& angularVel) {
-    return drive(xVel, angularVel, 0.0);
-  }
-
-  bool Create::drive(const float& xVel, const float& angularVel, double wheelBalance) {
-    if (!std::isfinite(wheelBalance) || std::abs(wheelBalance) >= 1.0) {
-      return false;
-    }
     // Compute left and right wheel velocities
     float leftVel = xVel - ((model.getAxleLength() / 2.0) * angularVel);
     float rightVel = xVel + ((model.getAxleLength() / 2.0) * angularVel);
-    if (wheelBalance != 0.0) {
-      leftVel *= 1.0 + wheelBalance;
-      rightVel *= 1.0 - wheelBalance;
-      // Preserve the corrected ratio when either wheel reaches its speed limit.
-      const float peak = std::max(std::abs(leftVel), std::abs(rightVel));
-      if (peak > model.getMaxVelocity()) {
-        const float scale = model.getMaxVelocity() / peak;
-        leftVel *= scale;
-        rightVel *= scale;
-      }
-    }
     return driveWheels(leftVel, rightVel);
   }
 

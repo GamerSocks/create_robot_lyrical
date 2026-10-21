@@ -170,6 +170,7 @@ if(LIBCREATE_BUILD_TESTS AND ${GTEST_FOUND})
   set(LIBCREATE_TESTS
     test_create
     test_data
+    test_odometry
     test_packet
     test_robot_model
     test_serial_stream

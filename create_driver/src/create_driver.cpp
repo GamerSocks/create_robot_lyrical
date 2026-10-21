@@ -57,27 +57,30 @@ CreateDriver::CreateDriver()
   publish_tf_ = declare_parameter<bool>("publish_tf", true);
   oi_mode_workaround_ = declare_parameter<bool>("oi_mode_workaround", false);
 
-  balance_parameter_callback_ = add_on_set_parameters_callback(
+  wheel_speed_gains_validation_ = add_on_set_parameters_callback(
     [](const std::vector<rclcpp::Parameter>& parameters) {
       rcl_interfaces::msg::SetParametersResult result;
       result.successful = true;
       for (const auto& parameter : parameters) {
-        if (parameter.get_name() == "wheel_balance" &&
+        if ((parameter.get_name() == "wheel_speed_p" || parameter.get_name() == "wheel_speed_i" ||
+             parameter.get_name() == "wheel_speed_max_correction") &&
             (parameter.get_type() != rclcpp::ParameterType::PARAMETER_DOUBLE ||
-            !std::isfinite(parameter.as_double()) || std::abs(parameter.as_double()) >= 1.0)) {
+            !std::isfinite(parameter.as_double()) || parameter.as_double() < 0.0)) {
           result.successful = false;
-          result.reason = "wheel_balance must be a finite double strictly between -1 and 1";
+          result.reason = parameter.get_name() + " must be a finite, nonnegative double";
           break;
         }
       }
       return result;
     });
-  rcl_interfaces::msg::ParameterDescriptor balance_parameter;
-  balance_parameter.description =
-    "Wheel command trim: left *= (1 + balance), right *= (1 - balance). "
-    "Positive biases forward travel right; does not alter measured odometry.";
-  balance_parameter.additional_constraints = "Finite and strictly between -1 and 1";
-  declare_parameter<double>("wheel_balance", 0.0, balance_parameter);
+  // Closed-loop wheel speed control on the encoder-measured wheel speeds.
+  declare_parameter<bool>("wheel_speed_control", false);
+  declare_parameter<double>("wheel_speed_p", 0.3);
+  declare_parameter<double>("wheel_speed_i", 3.0);
+  declare_parameter<double>("wheel_speed_max_correction", 0.1);
+  setWheelSpeedGains();
+  wheel_speed_gains_callback_ = add_post_set_parameters_callback(
+    [this](const std::vector<rclcpp::Parameter>&) {setWheelSpeedGains();});
 
   rcl_interfaces::msg::ParameterDescriptor odometry_parameter;
   odometry_parameter.read_only = true;
@@ -142,6 +145,8 @@ CreateDriver::CreateDriver()
   calibration.yaw_discontinuity_variance = declare_parameter<double>(
     "yaw_discontinuity_variance", calibration.yaw_discontinuity_variance, odometry_parameter);
   robot_->setOdometryCalibration(calibration);
+  // Wheel targets use the same calibrated geometry as the measured wheel speeds.
+  control_axle_length_ = calibration.axle_length;
 
   // Enable/disable the OI mode reporting workaround in libcreate.
   // https://github.com/AutonomyLab/create_robot/issues/64
@@ -264,8 +269,39 @@ CreateDriver::~CreateDriver()
 
 void CreateDriver::cmdVelCallback(geometry_msgs::msg::Twist::UniquePtr msg)
 {
-  robot_->drive(msg->linear.x, msg->angular.z, get_parameter("wheel_balance").as_double());
+  // Kept even when control is off, so enabling it mid-motion starts from the current command.
+  target_linear_ = msg->linear.x;
+  target_angular_ = msg->angular.z;
+  if (!get_parameter("wheel_speed_control").as_bool()) {
+    robot_->drive(msg->linear.x, msg->angular.z);
+  }
   last_cmd_vel_time_ = now();
+}
+
+void CreateDriver::setWheelSpeedGains()
+{
+  wheel_speed_controller_.setGains({
+    get_parameter("wheel_speed_p").as_double(), get_parameter("wheel_speed_i").as_double(),
+    get_parameter("wheel_speed_max_correction").as_double()});
+}
+
+void CreateDriver::controlWheelSpeeds()
+{
+  // Older measurements no longer describe the current wheel speed (about 6 sensor packets).
+  constexpr double max_measurement_age = 0.1;
+  const auto control_time = std::chrono::steady_clock::now();
+  const double dt = last_control_time_ == std::chrono::steady_clock::time_point{} ? 0.0 :
+    std::chrono::duration<double>(control_time - last_control_time_).count();
+  last_control_time_ = control_time;
+
+  const auto state = robot_->getOdometryState();
+  const bool measurement_valid = state.valid &&
+    std::chrono::duration<double>(control_time - state.sample_time).count() <= max_measurement_age;
+  const double half_turn = target_angular_ * control_axle_length_ / 2.0;
+  const auto [left, right] = wheel_speed_controller_.update(
+    target_linear_ - half_turn, target_linear_ + half_turn,
+    state.left_velocity, state.right_velocity, measurement_valid, dt);
+  robot_->driveWheels(left, right);
 }
 
 void CreateDriver::debrisLEDCallback(std_msgs::msg::Bool::UniquePtr msg)
@@ -394,8 +430,16 @@ bool CreateDriver::update()
   publishCliff();
 
   // If last velocity command was sent longer than latch duration, stop robot
-  if (last_cmd_vel_time_.nanoseconds() == 0 || now() - last_cmd_vel_time_ >= latch_duration_) {
+  const bool command_stale =
+    last_cmd_vel_time_.nanoseconds() == 0 || now() - last_cmd_vel_time_ >= latch_duration_;
+  if (command_stale) {
     robot_->drive(0, 0);
+  }
+  if (command_stale || !get_parameter("wheel_speed_control").as_bool()) {
+    wheel_speed_controller_.reset();
+    last_control_time_ = {};
+  } else {
+    controlWheelSpeeds();
   }
 
   return true;

@@ -28,6 +28,7 @@ POSSIBILITY OF SUCH DAMAGE.
 
 #ifndef CREATE_DRIVER__CREATE_DRIVER_H_
 #define CREATE_DRIVER__CREATE_DRIVER_H_
+#include <chrono>
 #include <string>
 
 #include "create_msgs/msg/charging_state.hpp"
@@ -39,6 +40,7 @@ POSSIBILITY OF SUCH DAMAGE.
 #include "create_msgs/msg/motor_setpoint.hpp"
 
 #include "create/create.h"
+#include "create_driver/wheel_speed_controller.h"
 
 #include "diagnostic_updater/diagnostic_updater.hpp"
 #include "geometry_msgs/msg/transform_stamped.hpp"
@@ -104,7 +106,8 @@ private:
   rclcpp::Publisher<create_msgs::msg::Cliff>::SharedPtr cliff_pub_;
 
   rclcpp::TimerBase::SharedPtr loop_timer_;
-  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr balance_parameter_callback_;
+  rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr wheel_speed_gains_validation_;
+  rclcpp::node_interfaces::PostSetParametersCallbackHandle::SharedPtr wheel_speed_gains_callback_;
 
   tf2_ros::TransformBroadcaster tf_broadcaster_;
 
@@ -125,6 +128,13 @@ private:
   bool is_running_slowly_;
   uint64_t last_odom_sequence_ = 0;
   double odometry_timeout_;
+
+  // Closed-loop wheel speed control (wheel_speed_control parameter)
+  create_driver::WheelSpeedController wheel_speed_controller_{{}};
+  double target_linear_ = 0.0;
+  double target_angular_ = 0.0;
+  double control_axle_length_ = 0.0;
+  std::chrono::steady_clock::time_point last_control_time_{};
 
   // ROS params
   std::string dev_;
@@ -152,6 +162,8 @@ private:
   void vacuumBrushMotor(create_msgs::msg::MotorSetpoint::UniquePtr msg);
 
   bool update();
+  void setWheelSpeedGains();
+  void controlWheelSpeeds();
   void updateBatteryDiagnostics(diagnostic_updater::DiagnosticStatusWrapper& stat);
   void updateSafetyDiagnostics(diagnostic_updater::DiagnosticStatusWrapper& stat);
   void updateSerialDiagnostics(diagnostic_updater::DiagnosticStatusWrapper& stat);

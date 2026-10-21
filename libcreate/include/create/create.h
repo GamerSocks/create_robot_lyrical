@@ -272,18 +272,6 @@ namespace create {
       bool drive(const float& xVel, const float& angularVel);
 
       /**
-       * \brief Set body velocity with wheel-command balance correction.
-       * \param xVel in m/s
-       * \param angularVel in rads/s
-       * \param wheelBalance finite and strictly between -1 and 1. Left wheel
-       * is multiplied by (1 + wheelBalance), right by (1 - wheelBalance).
-       * Positive values bias forward travel right. Odometry is unaffected.
-       * Nonzero balance preserves the wheel-speed ratio at the speed limit.
-       * \return true if successful, false for invalid balance or send failure
-       */
-      bool drive(const float& xVel, const float& angularVel, double wheelBalance);
-
-      /**
        * \brief Set the power to the side brush motor.
        * \param power is in the range [-1, 1]
        * \return true if successful, false otherwise
