@@ -28,6 +28,8 @@ public:
     double max_correction = 0.0;  // m/s
   };
 
+  /// Without gains the correction stays zero until setGains is called.
+  WheelSpeedController() = default;
   explicit WheelSpeedController(const Gains & gains);
 
   void setGains(const Gains & gains);

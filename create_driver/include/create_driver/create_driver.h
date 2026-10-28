@@ -130,7 +130,7 @@ private:
   double odometry_timeout_;
 
   // Closed-loop wheel speed control (wheel_speed_control parameter)
-  create_driver::WheelSpeedController wheel_speed_controller_{{}};
+  create_driver::WheelSpeedController wheel_speed_controller_;
   double target_linear_ = 0.0;
   double target_angular_ = 0.0;
   double control_axle_length_ = 0.0;

@@ -74,6 +74,14 @@ TEST(WheelSpeedController, CommandNeverOpposesTarget)
   }
 }
 
+TEST(WheelSpeedController, NoCorrectionBeforeGainsAreSet)
+{
+  WheelSpeedController controller;
+  for (int step = 0; step < 10; ++step) {
+    EXPECT_EQ(controller.update(0.25, -0.1, 0.1, -0.05, true, DT), std::make_pair(0.25, -0.1));
+  }
+}
+
 TEST(WheelSpeedController, InvalidMeasurementPassesTargetsThrough)
 {
   WheelSpeedController controller(GAINS);
